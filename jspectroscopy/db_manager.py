@@ -35,10 +35,11 @@ schema_filename = 'initial_schema.sql'
 _tablename = 'fits'
 
 
-schema_cols = [ 'x', 'y', 'fit_id', 'successful_fit',
+schema_cols = [ 'detnum', 'x', 'y', 'fit_id', 'successful_fit',
                 'npeaks', 'last_attempt', 
                 'params_guess', 'fit_bounds',
                 'peak_guesses', 'model']
+
 
 
 
@@ -63,7 +64,7 @@ schema_cols = [ 'x', 'y', 'fit_id', 'successful_fit',
 class spectrum_db( object ):
 
     
-    def __init__( self, path, dimensions = None,
+    def __init__( self, path, dets_used = None, dimensions = None,
                   peak_types = None, constrain_det_params = None,
                   name = None ) :
 

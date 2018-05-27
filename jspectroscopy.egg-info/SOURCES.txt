@@ -1,0 +1,4 @@
+jspectroscopy.egg-info/PKG-INFO
+jspectroscopy.egg-info/SOURCES.txt
+jspectroscopy.egg-info/dependency_links.txt
+jspectroscopy.egg-info/top_level.txt
