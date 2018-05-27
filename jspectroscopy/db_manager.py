@@ -55,6 +55,7 @@ schema_cols = [ 'detnum', 'x', 'y', 'fit_id', 'successful_fit',
 
 
 
+
 # class providing complete set of operations for writing
 # and specialized querying for the DBs.
 # det_number is optional number of the detector, in case
