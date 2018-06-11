@@ -232,6 +232,7 @@ class spectrum_fitter( object ) :
              ax = None, plot_bounds = None, logscale = 1,
              print_output = 0 ) :
 
+        
         self.peak_params_guess = copy.deepcopy( peak_params_guess )
         self.det_params_guess = copy.deepcopy( det_params_guess )
         self.xbounds = copy.copy( xbounds )
@@ -253,12 +254,14 @@ class spectrum_fitter( object ) :
         #self.ax = ax
         
         self.fit_attempted = 1
+
         
         if xbounds is not None :
             y = xcut( x, y, xbounds )
             dy = xcut( x, dy, xbounds )
             x = xcut( x, x, xbounds ) 
 
+            
         self.fit_bounds = xbounds
         # self.x = x
         
@@ -302,8 +305,6 @@ class spectrum_fitter( object ) :
 
         objective = lambda _params, _x, _y, _dy : _resid( self.__fit_eval, _params,
                                                           _x, _y, _dy ) 
-
-        # print( objective( x, y, dy ) )
 
         
         ret = scipy.optimize.leastsq( objective, params_array, args = (x, y, dy),
@@ -580,12 +581,12 @@ def auto_fit_spectrum( x, y, dy,
                        ax = None,
                        rel_plot_bounds = None,
                        logscale = 1, print_output = 0 ) :
-
+    
     num_groups = len( group_ranges )
 
     if len(peak_locations) != num_groups : 
 
-        print( '''error: inconsistent size of group_ranges, peak_structures, or peak_locations.
+        print( '''ERROR: inconsistent size of group_ranges, peak_structures, or peak_locations.
         they should all have length equal to group_ranges''' )
         sys.exit(0)
 
@@ -705,10 +706,14 @@ def auto_fit_many_spectra( spec_db, data_retriever,
                            rel_plot_bounds = None,
                            logscale = 1,
                            time_estimator = None,
-                           print_output = 0 ) :
+                           print_output = 0,
+                           dets_used = None ) :
     
     # dimensions of output images: number of plots in each dimension
 
+    if dets_used is None :
+        dets_used = [ -1 ] 
+    
     xdim = spec_db.xdim
     ydim = spec_db.ydim
     
@@ -720,49 +725,51 @@ def auto_fit_many_spectra( spec_db, data_retriever,
     if not os.path.exists( image_path ):
         os.mkdir( image_path )
         
-    # these 2 loops loop over grids of dimx x dimy images. 
-    for x in range( xdim ):
-        
-        # these loops create the 4x4 grids. 2 per strip row.
-        for k in range( ydim // (im_xdim * im_ydim) ) :
-        
-            f, axarr = plt.subplots( im_xdim, im_ydim, figsize=(20,10) )    
-            
-            for i in range( im_xdim ):
-                for j in range( im_ydim ):
-                        
-                    y = ( i * im_xdim + j ) + ( k * im_xdim * im_ydim )
-                        
-                    # print( str( [x,y] ) )    
-                        
-                    # this estimates the time remaining for the program to terminate
-                    if time_estimator : 
-                        time_estimator.update() 
-                        
-                    xdata, ydata, dydata = data_retriever( x, y )
-                            
-                    spec_fits = auto_fit_spectrum( xdata, ydata, dydata,
-                                                   group_ranges, peak_locations,
-                                                   num_peaks_to_detect, primary_peak_detector,
-                                                   peak_sizes_guesses, peak_width_guesses,
-                                                   det_params_guesses,
-                                                   peak_mu_offset,
-                                                   fit_acceptor, params_shuffler,
-                                                   axarr[i,j], rel_plot_bounds, logscale,
-                                                   print_output )
+    # these 2 loops loop over grids of dimx x dimy images.
+    for d in dets_used : 
+        for x in range( xdim ):
 
-                    for l in range( num_groups ) :
-                        if spec_fits is not None : 
-                            spec_db.insert_fit_data( x, y, l, spec_fits[l] ) 
-                            
-                        else :
-                            spec_db.insert_fit_data( x, y, l, None ) 
-            
-            plt.savefig( image_path + ( 'x=%d.%d' % (x,k) ) + '.png', format='png')
-            # plt.clf()
-            plt.close( f )
-                            
-            
+            # these loops create the 4x4 grids. 2 per strip row.
+            for k in range( ydim // (im_xdim * im_ydim) ) :
+
+                f, axarr = plt.subplots( im_xdim, im_ydim, figsize=(20,10) )    
+
+                for i in range( im_xdim ):
+                    for j in range( im_ydim ):
+
+                        y = ( i * im_xdim + j ) + ( k * im_xdim * im_ydim )
+
+                        # print( str( [x,y] ) )    
+
+                        # this estimates the time remaining for the program to terminate
+                        if time_estimator : 
+                            time_estimator.update() 
+
+                        xdata, ydata, dydata = data_retriever( d, x, y )
+
+
+                        spec_fits = auto_fit_spectrum( xdata, ydata, dydata,
+                                                       group_ranges, peak_locations,
+                                                       num_peaks_to_detect, primary_peak_detector,
+                                                       peak_sizes_guesses, peak_width_guesses,
+                                                       det_params_guesses,
+                                                       peak_mu_offset,
+                                                       fit_acceptor, params_shuffler,
+                                                       axarr[i,j], rel_plot_bounds, logscale,
+                                                       print_output )
+
+                        for l in range( num_groups ) :
+                            if spec_fits is not None : 
+                                spec_db.insert_fit_data( d, x, y, l, spec_fits[l] ) 
+
+                            else :
+                                spec_db.insert_fit_data( d, x, y, l, None ) 
+
+                plt.savefig( image_path + ( '%d_%d_%d' % (d,x,k) ) + '.png', format='png')
+                # plt.clf()
+                plt.close( f )
+
+
     # spec_db.disconnect()
 
     return 1 

@@ -10,7 +10,7 @@ import libjacob.jmeas as meas
 # confidence interval
 
 def find_alpha_peak( alpha_spectrum, peaknum = 0,
-                     num_iterations = 1000, plot = 0, max_failed_samples = 1000 ) :
+                     num_iterations = 500, plot = 0, max_failed_samples = 500 ) :
     
     # print( 'alpha_spectrum params:' + str( alpha_spectrum._construct_params_array() ) )
 

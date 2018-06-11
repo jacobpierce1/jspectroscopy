@@ -75,6 +75,8 @@ class spectrum_db( object ):
         self.conn = None
         self.name = name
 
+        # self.delete() 
+        
         pathdir = os.path.dirname( path ) 
         if not os.path.exists( pathdir ) :
             os.mkdir( pathdir ) 
@@ -82,7 +84,7 @@ class spectrum_db( object ):
         if not os.path.exists( path ) :
             if create_new_db :
                 self.is_empty = 1 
-                self.create( dimensions, peak_types, constrain_det_params )
+                self.create( dets_used, dimensions, peak_types, constrain_det_params )
             else :
                 print( 'ERROR: attempted to load db, but the path does not exist' )
                 sys.exit(0) 
@@ -98,7 +100,12 @@ class spectrum_db( object ):
 
     
         
-    def create( self, dimensions, peak_types, constrain_det_params ) :
+    def create( self, dets_used, dimensions, peak_types, constrain_det_params ) :
+
+        if dets_used is None :
+            self.dets_used = [-1]
+        else : 
+            self.dets_used = dets_used 
         
         if constrain_det_params is None :
             constrain_det_params = { 'a' : 0, 'b' : 0, 'g' : 0 } 
@@ -143,7 +150,7 @@ class spectrum_db( object ):
 
         print( 'INFO: success, now populating...' )
             
-        self.populate( *dimensions, len( peak_types ) )        
+        self.populate()        
         self.write_metadata()
 
         self.is_empty = 0
@@ -154,9 +161,9 @@ class spectrum_db( object ):
             
     # fill the db with each fit id that we need, giving the needs update flag for
     # everything. this is meant to only be called when the table is empty 
-    def populate( self, dets_used, numx, numy, numfits ):
+    def populate( self ):
 
-        for d in dets_used : 
+        for d in self.dets_used :  
             for x in range( self.xdim ):
                 for y in range( self.ydim ):
                     for i in range( self.num_groups ):
@@ -332,13 +339,13 @@ class spectrum_db( object ):
         
         if os.path.exists( self.path ):
             
-            ans = raw_input( 'PROMPT: delete ' + filename + ', are you sure (y/n) ?  ' )
+            # ans = raw_input( 'PROMPT: delete ' + filename + ', are you sure (y/n) ?  ' )
             
-            if( ans == 'y' ):
+            # if( ans == 'y' ):
 
-                os.remove( self.path ) 
-                print( 'INFO: deleted db.' )         
-                return 1
+            os.remove( self.path ) 
+            print( 'INFO: deleted db.' )         
+            return 1
 
             print( 'INFO: did not delete db.' )
 
