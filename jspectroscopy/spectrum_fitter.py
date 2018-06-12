@@ -10,18 +10,20 @@
 import matplotlib 
 matplotlib.use('Agg')
 
+import peakdetect.peakdetect as peakdetect
 
-import libjacob.jmath as jmath
-from libjacob.jmath import xcut
 
 
 
 
 import numpy as np
+np.warnings.filterwarnings('ignore')
+
 import scipy.special as special
 # from lmfit import Model
 
-import libjacob.jmeas as meas
+# import libjacob.jmeas as meas
+from jutils import meas 
 
 import matplotlib.pyplot as plt
 
@@ -30,9 +32,9 @@ from scipy.stats import chi2
 
 import os 
 
-from libjacob.jutils import time_estimator
+from jutils import time_estimator
 
-from libjacob.jpyplot import saveplot_low_quality
+# from libjacob.jpyplot import saveplot_low_quality
 
 import copy
 
@@ -60,6 +62,70 @@ _fitters_num_params = { 'a' : (3,3),
      
 # __alpha_num_peak_params = 2
 # __alpha_num_det_params = 4
+
+
+
+
+
+
+
+def xcut( x, y, newx_bounds, xsorted = 0 ):
+
+    # if x is sorted, then find newx_bounds[0] from the left
+    # and newx_bounds[1] from the right. should speed up the cut,
+    # but has not been tested.
+
+    if xsorted:
+        
+        left = np.searchsorted( x, newx_bounds[0] )
+        right = np.searchsorted( x, newx_bounds[1], side = 'right' )
+        return y[ left : right ]
+
+    # otherwise find applicable indices by brute force.
+    # should be avoided.
+
+    return np.asarray( y[ (x >= newx_bounds[0]) & (x <= newx_bounds[1]) ] )
+
+
+
+
+
+
+def get_n_peak_positions( n, data ):
+
+    output_peak_positions = [0] * n
+    
+    # peakdetect returns 2 tuples: positions and counts of peaks
+    peak_positions = peakdetect.peakdetect( data, lookahead=10 )[0]
+
+
+    # print( 'peakpositions type data: ' )
+    # print( type(peak_positions) )
+    # print( type( peak_positions [0][1] ) ) 
+
+    # it is possible that not all n peaks are found. in that case
+    # we will still populate our_peaks with the ones that were
+    # found as it may still be useful. 
+    num_peaks_found = min( n, len( peak_positions ) )
+
+        
+    # now find the 5 largest and sort by x position.
+    # indices is the indices of the peaks as found in data
+    indices = np.argpartition( [ z[1] for z in peak_positions ],
+                               -num_peaks_found )[ -num_peaks_found : ]
+    
+    output_peak_positions[:] = [ np.asscalar( peak_positions[z][0] )
+                                 for z in sorted( indices ) ]
+
+    
+    # return number of peaks detected.
+    return output_peak_positions
+
+
+
+
+
+
 
 
 def _resid( f, params, x, y, dy ) :
@@ -593,7 +659,7 @@ def auto_fit_spectrum( x, y, dy,
     peaks_per_group = [ len(peak_locations[i]) for i in range( num_groups ) ]
     
     # find main peaks
-    our_peaks = np.asarray( jmath.get_n_peak_positions( num_peaks_to_detect, y ) )
+    our_peaks = np.asarray( get_n_peak_positions( num_peaks_to_detect, y ) )
 
     # print( our_peaks ) 
     
@@ -745,8 +811,13 @@ def auto_fit_many_spectra( spec_db, data_retriever,
                         if time_estimator : 
                             time_estimator.update() 
 
-                        xdata, ydata, dydata = data_retriever( d, x, y )
+                        tmp = data_retriever( d, x, y )
 
+                        if tmp is not None :
+                            xdata, ydata, dydata = tmp
+
+                        else :
+                            continue
 
                         spec_fits = auto_fit_spectrum( xdata, ydata, dydata,
                                                        group_ranges, peak_locations,

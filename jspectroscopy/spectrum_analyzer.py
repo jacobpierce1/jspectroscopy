@@ -2,7 +2,7 @@ import jspectroscopy as spec
 import numpy as np 
 import matplotlib.pyplot as plt
 import scipy.optimize
-import libjacob.jmeas as meas
+from jutils import meas
 
 
 # input: alpha spectrum with one peak or more peaks
@@ -57,7 +57,7 @@ def find_alpha_peak( alpha_spectrum, peaknum = 0,
     m = np.mean( peakpos_arr ) 
     s = np.std( peakpos_arr  )
 
-    print( m, s ) 
+    # print( m, s ) 
 
     
     if plot :

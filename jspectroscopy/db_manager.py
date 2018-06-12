@@ -9,7 +9,11 @@ import sqlite3
 import json
 import numpy as np
 
-from libjacob.jutils import isint, time_estimator
+from jutils import meas as meas
+
+import jutils 
+
+
 import sys
 import jspectroscopy as spec 
 
@@ -17,7 +21,6 @@ import datetime
 
 import dill # allow lambda function pickle
 
-import libjacob.jmeas as meas 
 
 
 
@@ -70,6 +73,7 @@ class spectrum_db( object ):
                   name = None ) :
 
         create_new_db = ( peak_types is not None ) and ( dimensions is not None )
+
         
         self.path = path
         self.conn = None
@@ -77,7 +81,10 @@ class spectrum_db( object ):
 
         # self.delete() 
         
-        pathdir = os.path.dirname( path ) 
+        pathdir = os.path.dirname( self.path )
+        if pathdir == '' :
+            pathdir = './'
+            
         if not os.path.exists( pathdir ) :
             os.mkdir( pathdir ) 
         
@@ -163,7 +170,7 @@ class spectrum_db( object ):
     # everything. this is meant to only be called when the table is empty 
     def populate( self ):
 
-        for d in self.dets_used :  
+        for d in self.dets_used :
             for x in range( self.xdim ):
                 for y in range( self.ydim ):
                     for i in range( self.num_groups ):
@@ -205,9 +212,10 @@ class spectrum_db( object ):
 
         self.num_groups = len( self.peak_types ) 
         self.num_peaks_per_group = [ len(x) for x in self.peak_types ]
+        self.num_dets = len( self.dets_used ) 
 
-
-        
+        self.num_records = ( self.num_dets * self.xdim * self.ydim
+                             * self.num_groups ) 
 
         
         
@@ -267,7 +275,7 @@ class spectrum_db( object ):
 
     
 
-    def insert_fit_data( self, detnum, x, y, group_num, spectrum_fit ):        
+    def insert_fit_data( self, detnum, x, y, group_num, spectrum_fit ):
 
         if self.conn is None:
             raise ValueError( 'Cannot insert data, sqlite3 connection is not open. Call db.connect().' )
@@ -331,7 +339,8 @@ class spectrum_db( object ):
 
 
 
-    
+
+        
 
 
 
@@ -411,18 +420,25 @@ class spectrum_db( object ):
 
 
             
-    def write_peak_values( self, path ) :
+    def write_peak_values( self, path, estimate_time = 0, dets = None ) :
 
         # init the data structure storing the mu values
+        if estimate_time : 
+            time_estimator = jutils.time_estimator( self.num_records, 20 ) 
         
-        peak_values = [ [ 0 ] * self.num_peaks_per_group[i]
-                      for i in range( self.num_groups ) ] 
+        peak_values = [ [ [ 0 ] * self.num_peaks_per_group[i]
+                          for i in range( self.num_groups ) ]
+                        for d in range( self.num_dets ) ]
 
-        for i in range( self.num_groups ) :
-            for j in range( self.num_peaks_per_group[i] ) : 
-                peak_values[i][j] = meas.meas.empty(( self.xdim, self.ydim ))
+        for d in range( self.num_dets ) :
+            for i in range( self.num_groups ) :
+                for j in range( self.num_peaks_per_group[i] ) : 
+                    peak_values[d][i][j] = meas.meas.empty(( self.xdim, self.ydim ))
                             
-            
+
+        if dets is None :
+            dets = self.dets_used 
+                    
         cursor = self.conn.cursor()
         cursor.execute( 'SELECT * FROM ' + _tablename )
 
@@ -432,14 +448,15 @@ class spectrum_db( object ):
         
         for row in cursor:
 
+            time_estimator.update() 
+
             x = row['x']
             y = row['y'] 
+            d = row[ 'detnum' ]
             group_num = row[ 'group_num' ]
             success = row[ 'success' ]
-
-            # print( 'success: ' + str( success ) ) 
                         
-            if success :
+            if success and d in dets : 
                 
                 cov = _from_bin( row[ 'cov' ] ) 
 
@@ -453,27 +470,22 @@ class spectrum_db( object ):
                 spectrum.cov = cov 
                 
                 for j in range( self.num_peaks_per_group[ group_num ] ) :
-
-                    # print( spectrum.cov)
-                    # print( 'params_result: ' + str( params_result ) ) 
-                    # print( spectrum._construct_params_array() )
-                    # print( spectrum.peak_params[0] )
                                         
                     if spectrum.cov is not None : 
                         alpha_peak = spec.find_alpha_peak( spectrum, j, 500, 0 ) 
 
                         if alpha_peak is None :
-                            peak_values[ group_num ][j][x,y] = meas.nan
+                            peak_values[d][ group_num ][j][x,y] = meas.nan
 
                         else : 
-                            peak_values[ group_num ][j][x,y] = alpha_peak 
+                            peak_values[d][ group_num ][j][x,y] = alpha_peak 
 
                     else :
-                        peak_values[ group_num ][j][x,y] = meas.nan
+                        peak_values[d][ group_num ][j][x,y] = meas.nan
                         
             else :  
                 for j in range( self.num_peaks_per_group[ group_num ] ) :
-                    peak_values[ group_num ][j][x,y] = meas.nan 
+                    peak_values[d][ group_num ][j][x,y] = meas.nan 
                         
         with open( path, 'wb' ) as f :
             dill.dump( peak_values, f )
@@ -755,8 +767,34 @@ class spectrum_db( object ):
         return peak_grids    
     
 
+    
+    def compute_fit_success_rate( self ) :
+
+        query = 'SELECT * FROM fits'
+
+        cursor = self.conn.cursor()
+
+        cursor.execute( query ) 
+
+        total_count = 0
+        success_count = 0 
+        
+        for row in cursor.fetchall() :
+
+            row = dict( row )
+
+            success = row[ 'success' ]
+
+            success_count += success
+            total_count += 1
 
 
+        # print( success_count )
+        # print( total_count )
+        
+        return success_count / total_count 
+            
+            
 
 
     
