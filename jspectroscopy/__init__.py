@@ -6,4 +6,6 @@ from .spectrum_analyzer import find_alpha_peak
 
 from .db_manager import spectrum_db
 
+from .hitmaps import compute_hitmaps, plot_hitmaps 
+
 # from .spectrum_fitter import fit_one_spectrum, fit_all_spectra

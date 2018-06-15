@@ -421,7 +421,7 @@ class spectrum_db( object ):
 
             
     def write_peak_values( self, path, estimate_time = 0, dets = None ) :
-
+        
         # init the data structure storing the mu values
         if estimate_time : 
             time_estimator = jutils.time_estimator( self.num_records, 20 ) 
@@ -445,6 +445,8 @@ class spectrum_db( object ):
         spec_fitters = [ spec.spectrum_fitter( self.peak_types[i],
                                                constrain_det_params = { 'a' : 1 } )
                          for i in range( self.num_groups ) ]
+
+        dets_used_dict = dict( zip( self.dets_used, range( self.num_dets ) ) )
         
         for row in cursor:
 
@@ -452,11 +454,12 @@ class spectrum_db( object ):
 
             x = row['x']
             y = row['y'] 
-            d = row[ 'detnum' ]
+            detnum = row[ 'detnum' ]
+            d = dets_used_dict[ detnum ]
             group_num = row[ 'group_num' ]
             success = row[ 'success' ]
                         
-            if success and d in dets : 
+            if success > 0 and detnum in dets : 
                 
                 cov = _from_bin( row[ 'cov' ] ) 
 
@@ -498,7 +501,7 @@ class spectrum_db( object ):
     def read_values( self, path ) :
 
         if not os.path.exists( path ) :
-            print( 'ERROR: path not found' ) 
+            print( 'ERROR in db_manager.read_values(): path not found' ) 
             sys.exit(0) 
 
         with open( path, 'rb' ) as f :

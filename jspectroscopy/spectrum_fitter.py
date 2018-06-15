@@ -10,8 +10,8 @@
 import matplotlib 
 matplotlib.use('Agg')
 
-import peakdetect.peakdetect as peakdetect
 
+import jspectroscopy.spec_utils as spec_utils
 
 
 
@@ -89,37 +89,6 @@ def xcut( x, y, newx_bounds, xsorted = 0 ):
 
 
 
-
-
-def get_n_peak_positions( n, data ):
-
-    output_peak_positions = [0] * n
-    
-    # peakdetect returns 2 tuples: positions and counts of peaks
-    peak_positions = peakdetect.peakdetect( data, lookahead=10 )[0]
-
-
-    # print( 'peakpositions type data: ' )
-    # print( type(peak_positions) )
-    # print( type( peak_positions [0][1] ) ) 
-
-    # it is possible that not all n peaks are found. in that case
-    # we will still populate our_peaks with the ones that were
-    # found as it may still be useful. 
-    num_peaks_found = min( n, len( peak_positions ) )
-
-        
-    # now find the 5 largest and sort by x position.
-    # indices is the indices of the peaks as found in data
-    indices = np.argpartition( [ z[1] for z in peak_positions ],
-                               -num_peaks_found )[ -num_peaks_found : ]
-    
-    output_peak_positions[:] = [ np.asscalar( peak_positions[z][0] )
-                                 for z in sorted( indices ) ]
-
-    
-    # return number of peaks detected.
-    return output_peak_positions
 
 
 
@@ -659,7 +628,7 @@ def auto_fit_spectrum( x, y, dy,
     peaks_per_group = [ len(peak_locations[i]) for i in range( num_groups ) ]
     
     # find main peaks
-    our_peaks = np.asarray( get_n_peak_positions( num_peaks_to_detect, y ) )
+    our_peaks = np.asarray( spec_utils.get_n_peak_positions( num_peaks_to_detect, y ) )
 
     # print( our_peaks ) 
     
