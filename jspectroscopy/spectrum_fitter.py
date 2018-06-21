@@ -7,7 +7,10 @@
 # * option to automatically construct a sum of fitfuncs
 # * * suboption to hold some params constant when doing this
 
-import matplotlib 
+# import warnings
+# warnings.filterwarnings("ignore")
+
+import matplotlib
 matplotlib.use('Agg')
 
 
