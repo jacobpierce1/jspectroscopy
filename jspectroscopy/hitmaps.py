@@ -40,25 +40,22 @@ def compute_hitmaps( dimensions,
                      plot = 0,
                      debug_coords = None,
                      rel_plot_bounds = None ) :
-    
+
     # load saved data if it exists 
     if save_path is not None and not reset and debug_coords is None :
         if os.path.exists( save_path ) :
             with open( save_path, 'rb' ) as f :
                 hitmaps = dill.load( f )
-
-            # if filter_data :
-                
-                
+    
             # print( hitmaps ) 
                 
-            if plot :
-                plot_hitmaps( hitmaps ) 
+            # if plot :
+            #     plot_hitmaps( hitmaps ) 
             
             return hitmaps 
 
     num_maps = len( group_ranges )
-
+    
     hitmaps = np.zeros( ( num_maps, * dimensions ) )
 
     if debug_coords :
@@ -88,14 +85,20 @@ def compute_hitmaps( dimensions,
 
         plt.show() 
         
-        return None 
+        
 
     
     for x in range( dimensions[0] ) :
         for y in range( dimensions[1] ) :
 
-            xaxis, histo, dy = data_retriever( x, y )
-         
+            ret = data_retriever( x, y )
+            
+            if ret is None :
+                hitmaps[:,x,y] = np.nan
+                continue
+
+            xaxis, histo, dy = ret
+            
             # find peaks and check if valid detection
             peaks = np.asarray( utils.get_n_peak_positions( num_peaks_to_detect, histo ) ) 
             primary_peaks = primary_peak_detector( peaks, histo )

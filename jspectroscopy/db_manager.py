@@ -13,15 +13,17 @@ from jutils import meas as meas
 
 import jutils 
 
-
 import sys
 import jspectroscopy as spec 
 
+import matplotlib.cm
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+import matplotlib.pyplot as plt 
 import datetime
 
 import dill # allow lambda function pickle
-
-
+import scipy.optimize
+from scipy.stats import chi2
 
 
 
@@ -68,43 +70,85 @@ schema_cols = [ 'detnum', 'x', 'y', 'fit_id', 'successful_fit',
 class spectrum_db( object ):
 
     
-    def __init__( self, path, dets_used = None, dimensions = None,
-                  peak_types = None, constrain_det_params = None,
-                  name = None ) :
-
-        create_new_db = ( peak_types is not None ) and ( dimensions is not None )
-
+    def __init__( self, name, storage_path, dets_used = None, dimensions = None,
+                  peak_types = None, constrain_det_params = None ) :
         
-        self.path = path
         self.conn = None
         self.name = name
 
-        # self.delete() 
+        create_new_db = ( peak_types is not None ) and ( dimensions is not None )
+
+        if storage_path == '' :
+            storage_path = './'
+
+        storage_path += '/' + name + '/'
+
+
+        # create storage directories
+        self.storage_path = storage_path
+        self.heatmap_dir_path = storage_path + 'heatmaps/'
+        self.strip_plots_path = storage_path + 'strip_plots/'
         
-        pathdir = os.path.dirname( self.path )
-        if pathdir == '' :
-            pathdir = './'
-            
-        if not os.path.exists( pathdir ) :
-            os.mkdir( pathdir ) 
+        for path in [ self.storage_path, self.heatmap_dir_path, self.strip_plots_path ] :
+            if not os.path.exists( path ) :
+                os.mkdir( path ) 
+                
+        # create the database if it doesn't exist
+        self.db_path = storage_path + name + '.db'
         
-        if not os.path.exists( path ) :
+        if not os.path.exists( self.db_path ) :
+            print( self.db_path ) 
             if create_new_db :
                 self.is_empty = 1 
                 self.create( dets_used, dimensions, peak_types, constrain_det_params )
             else :
                 print( 'ERROR: attempted to load db, but the path does not exist' )
-                sys.exit(0) 
-
+                sys.exit(1)
+        
         else : 
             self.is_empty = 0
             self.connect()
             self.read_metadata()
 
-        # TODO remove this to fix bug
         
+        for det in self.dets_used :
+            tmp = self.heatmap_dir_path + '/' + str( det ) 
+            if not os.path.exists( tmp ) :
+                os.mkdir( tmp ) 
+
+            
+        # this is where all the extracted fit parameters are stored 
+        self.param_paths = {}
+
+        self.peak_indep_param = { 'mu' : 0, 'A' : 0, 'sigma' : 0,
+                                  'eta' : 1, 'tau1' : 1, 'tau2' : 1,
+                                  'sigma.calibrated' : 0,
+                                  'tau1.calibrated'  : 1,
+                                  'tau2.calibrated' : 1,
+                                  'peaks' : 0,
+                                  'peaks.calibrated' : 0 }
+
+        self.fit_params = [ 'mu', 'tau1', 'tau2', 'A', 'eta', 'sigma' ];
+
+        self.calibrated_fit_params = [ x + '.calibrated' for x in
+                                       [ 'tau1', 'tau2', 'sigma', 'peaks' ] ]
+        
+        self.extra_values = [ 'success', 'hitmap', 'all_fit_params', 'peaks',
+                              'calibration', 'peaks.calibrated' ]
+
+        for param_str in self.fit_params + self.extra_values + self.calibrated_fit_params :
+
+            # param_dir_path = storage_path + '/' + param_str
+
+            self.param_paths[ param_str ] = ( storage_path + self.name + '.'
+                                              + param_str + '.dill' ) 
+
+        self.detnum_to_detidx_dict = dict( zip( self.dets_used, range( self.num_dets ) ) )
+        self.detidx_to_detnum_dict = dict( zip( range( self.num_dets ), self.dets_used ) )
+
         return
 
+    
     
         
     def create( self, dets_used, dimensions, peak_types, constrain_det_params ) :
@@ -127,8 +171,8 @@ class spectrum_db( object ):
         self.peak_types = peak_types
         self.dimensions = dimensions
 
-        if not os.path.exists( self.path ) :
-            print( 'INFO: creating DB and schema for ' + self.path + '...' )
+        if not os.path.exists( self.db_path ) :
+            print( 'INFO: creating DB and schema for ' + self.db_path + '...' )
             
         else:
             print( 'ERROR: database already exists, returning' )
@@ -208,7 +252,7 @@ class spectrum_db( object ):
         self.peak_types = _from_bin( metadata[ 'peak_types' ] ) 
         self.constrain_det_params = _from_bin( metadata[ 'constrain_det_params' ] )
         self.timestamp = metadata[ 'timestamp' ]
-        self.name = metadata[ 'name' ]
+        # self.name = metadata[ 'name' ]
 
         self.num_groups = len( self.peak_types ) 
         self.num_peaks_per_group = [ len(x) for x in self.peak_types ]
@@ -221,7 +265,7 @@ class spectrum_db( object ):
         
     # check if this db has been created. 
     def exists( self ):
-        return os.path.exists( self.path ) 
+        return os.path.exists( self.db_path ) 
 
     
 
@@ -240,7 +284,7 @@ class spectrum_db( object ):
                 print( 'ERROR: db has not been created.' )
                 return 0 
 
-        self.conn = sqlite3.connect( self.path ) 
+        self.conn = sqlite3.connect( self.db_path ) 
 
         # this is set to allow you to read into an sqlite3.Row,
         # which is a dict-like object. 
@@ -329,9 +373,9 @@ class spectrum_db( object ):
         
         spec_result = _from_bin( result[ 'spectrum_fit' ] )
 
-        print( result )
+        # print( result )
 
-        sys.exit(0)
+        sys.exit(1)
 
         # print( spec_result ) 
 
@@ -346,13 +390,13 @@ class spectrum_db( object ):
 
     def delete( self ):
         
-        if os.path.exists( self.path ):
+        if os.path.exists( self.db_path ):
             
             # ans = raw_input( 'PROMPT: delete ' + filename + ', are you sure (y/n) ?  ' )
             
             # if( ans == 'y' ):
 
-            os.remove( self.path ) 
+            os.remove( self.db_path ) 
             print( 'INFO: deleted db.' )         
             return 1
 
@@ -365,80 +409,67 @@ class spectrum_db( object ):
 
 
     
-    def write_mu_values( self, path ) :
+    # peak_indep_param: 0 if the container should have peak indices,
+    # 1 if the container shouldn't have peak indices (i.e. just det and
+    # group indices 
+    
+    def create_empty_data_container( self, peak_indep_param ) :
 
-        # init the data structure storing the mu values
-        
-        mu_values = [ [ 0 ] * self.num_peaks_per_group[i]
-                      for i in range( self.num_groups ) ] 
+        if not peak_indep_param : 
 
-        for i in range( self.num_groups ) :
-            for j in range( self.num_peaks_per_group[i] ) : 
-                mu_values[i][j] = meas.meas.empty(( self.xdim, self.ydim ))
-                            
-            
-        cursor = self.conn.cursor()
-        cursor.execute( 'SELECT * FROM ' + _tablename )
-
-        spec_fitters = [ spec.spectrum_fitter( self.peak_types[i],
-                                               constrain_det_params = { 'a' : 1 } )
-                         for i in range( self.num_groups ) ]
-        
-        for row in cursor:
-
-            x = row['x']
-            y = row['y'] 
-            group_num = row[ 'group_num' ]
-            success = row[ 'success' ]
-            
-            if success :
-                params_result = _from_bin( row[ 'params_result' ] )
-                params_result_errors = _from_bin( row[ 'params_result_errors' ] )
-                
-                spectrum = spec_fitters[ group_num ] 
-
-                spectrum.set_params_from_params_array( params_result, errors = 0)
-                spectrum.set_params_from_params_array( params_result_errors, errors = 1)
-
-                # print( spectrum.peak_params[0][1] )
-                # print( spectrum.peak_params[1][1] )
-                # print( '' ) 
+            ret = [ [ 0 ] * self.num_peaks_per_group[i]
+                    for i in range( self.num_groups ) ]
                     
-                
-                for j in range( self.num_peaks_per_group[ group_num ] ) :
-                    mu_values[ group_num ][j][x,y] = meas.meas( spectrum.peak_params[j][1],
-                                                                spectrum.peak_params_errors[j][1] ) 
-                    
-            else :  
-                for j in range( self.num_peaks_per_group[ group_num ] ) :
-                    mu_values[ group_num ][j][x,y] = meas.nan 
-                        
-        with open( path, 'wb' ) as f :
-            dill.dump( mu_values, f )
 
-
-
-
-            
-    def write_peak_values( self, path, estimate_time = 0, dets = None ) :
-        
-        # init the data structure storing the mu values
-        if estimate_time : 
-            time_estimator = jutils.time_estimator( self.num_records, 20 ) 
-        
-        peak_values = [ [ [ 0 ] * self.num_peaks_per_group[i]
-                          for i in range( self.num_groups ) ]
-                        for d in range( self.num_dets ) ]
-
-        for d in range( self.num_dets ) :
             for i in range( self.num_groups ) :
                 for j in range( self.num_peaks_per_group[i] ) : 
-                    peak_values[d][i][j] = meas.meas.empty(( self.xdim, self.ydim ))
-                            
+                    ret[i][j] = meas.zeros(( self.num_dets, self.xdim, self.ydim ))
 
-        if dets is None :
-            dets = self.dets_used 
+        else :
+            ret = [ [ 0 ] for i in range( self.num_groups ) ]
+
+            for i in range( self.num_groups ) :
+                ret[i] = meas.zeros(( self.num_dets, self.xdim, self.ydim ))
                     
+        return ret
+                
+
+
+    
+    # mode = output format
+    # 0 = np ndarray
+    # 1 = csv
+    # 2 = both
+    def write_fit_params( self, param_str, mode ) :
+#    def write_mu_values( self ) :
+        print( param_str ) 
+
+        peak_indep = self.peak_indep_param[ param_str ] 
+        values = self.create_empty_data_container( peak_indep )
+        
+        # init the data structure storing the mu values
+        if param_str == 'mu' :
+            param_getter = lambda spec, j : spec.get_mu(j)
+
+        elif param_str == 'tau1' :
+            param_getter = lambda spec, j : spec.get_tau1(j)
+
+        elif param_str == 'tau2' :        
+            param_getter = lambda spec, j : spec.get_tau2(j)
+
+        elif param_str == 'sigma' :        
+            param_getter = lambda spec, j : spec.get_sigma(j)
+            
+        elif param_str == 'A' :        
+            param_getter = lambda spec, j : spec.get_A(j)
+            
+        elif param_str == 'eta' : 
+            param_getter = lambda spec, j : spec.get_eta(j)
+                        
+        else :
+            print( 'ERROR: param not found: ' + param_str )
+            sys.exit(1)
+
         cursor = self.conn.cursor()
         cursor.execute( 'SELECT * FROM ' + _tablename )
 
@@ -450,15 +481,85 @@ class spectrum_db( object ):
         
         for row in cursor:
 
+            d = dets_used_dict[ row[ 'detnum' ] ]
+            x = row['x']
+            y = row['y'] 
+            group_num = row[ 'group_num' ]
+            success = row[ 'success' ]
+            
+            if success == 1 :
+                params_result = _from_bin( row[ 'params_result' ] )
+                params_result_errors = _from_bin( row[ 'params_result_errors' ] )
+                
+                spectrum = spec_fitters[ group_num ] 
+
+                spectrum.set_params_from_params_array( params_result, errors = 0)
+                spectrum.set_params_from_params_array( params_result_errors, errors = 1)
+                    
+                if not self.peak_indep_param[ param_str ] : 
+                    for j in range( self.num_peaks_per_group[ group_num ] ) :
+                        values[ group_num ][j][d,x,y] = param_getter( spectrum, j )
+
+                else :
+                    values[ group_num ][d,x,y] = param_getter( spectrum, 0 )
+                                            
+                        
+            else :
+                if not self.peak_indep_param[ param_str ] : 
+                    for j in range( self.num_peaks_per_group[ group_num ] ) :
+                        values[ group_num ][j][d,x,y] = meas.nan
+                else :
+                    values[ group_num ][d,x,y] = meas.nan
+
+
+        if mode == 0 :
+            with open( self.param_paths[ param_str ], 'wb' ) as f :
+                dill.dump( values, f )
+
+        elif mode == 1 :
+
+            raise NotImplementedError
+            
+            # outpath = self.param_dir_path + param_str + '.csv'
+            # with open( outpath, 'w' ) as f :
+            #     values.write_csv( f )
+
+
+            
+    
+    def write_peak_values( self, estimate_time = 0, dets = None ) :
+
+        peak_path = self.param_paths[ 'peaks' ] 
+        
+        # init the data structure storing the mu values
+        if estimate_time : 
+            time_estimator = jutils.time_estimator( self.num_records, 20 ) 
+        
+        peak_values = self.create_empty_data_container(0)
+
+        if dets is None :
+            dets = self.dets_used 
+                    
+        cursor = self.conn.cursor()
+        cursor.execute( 'SELECT * FROM ' + _tablename )
+
+        spec_fitters = [ spec.spectrum_fitter( self.peak_types[i],
+                                               constrain_det_params = { 'a' : 1 } )
+                         for i in range( self.num_groups ) ]
+
+        for row in cursor:
+
             time_estimator.update() 
 
             x = row['x']
             y = row['y'] 
             detnum = row[ 'detnum' ]
-            d = dets_used_dict[ detnum ]
+            d = self.detnum_to_detidx_dict[ detnum ]
             group_num = row[ 'group_num' ]
             success = row[ 'success' ]
-                        
+
+            # print( d ) 
+            
             if success > 0 and detnum in dets : 
                 
                 cov = _from_bin( row[ 'cov' ] ) 
@@ -478,297 +579,366 @@ class spectrum_db( object ):
                         alpha_peak = spec.find_alpha_peak( spectrum, j, 500, 0 ) 
 
                         if alpha_peak is None :
-                            peak_values[d][ group_num ][j][x,y] = meas.nan
+                            peak_values[ group_num ][j][d,x,y] = meas.nan
 
                         else : 
-                            peak_values[d][ group_num ][j][x,y] = alpha_peak 
+                            peak_values[ group_num ][j][d,x,y] = alpha_peak 
 
                     else :
-                        peak_values[d][ group_num ][j][x,y] = meas.nan
+                        peak_values[ group_num ][j][d,x,y] = meas.nan
                         
             else :  
                 for j in range( self.num_peaks_per_group[ group_num ] ) :
-                    peak_values[d][ group_num ][j][x,y] = meas.nan 
+                    peak_values[ group_num ][j][d,x,y] = meas.nan 
                         
-        with open( path, 'wb' ) as f :
+        with open( peak_path, 'wb' ) as f :
             dill.dump( peak_values, f )
 
 
             
+    
+    def write_all_fit_params( self, mode = 0 ) :
+        for param_str in self.fit_params : 
+            self.write_fit_params( param_str, mode )
+            
         
 
             
-    def read_values( self, path ) :
+    def read_params( self, param_str ) :
 
+        path = self.param_paths[ param_str ] 
+        
         if not os.path.exists( path ) :
-            print( 'ERROR in db_manager.read_values(): path not found' ) 
-            sys.exit(0) 
+            print( 'ERROR in db_manager.read_values(): path not found: %s'
+                   % path ) 
+            sys.exit(1) 
 
         with open( path, 'rb' ) as f :
             values = dill.load( f )
 
         return values 
 
-    
+
+    def read_all_fit_params( self ) :
+
+        fit_params = {}
+        
+        for param_str in self.fit_params :
+            fit_params[ param_str ] = self.read_params( param_str )
+
+        return fit_params 
 
 
     
+    def package_all_fit_params( self ) :
+        all_fit_params = self.read_all_fit_params()
+        with open( self.param_paths[ 'all_fit_params' ], 'wb' ) as f :
+            dill.dump( all_fit_params, f )
+
+
+            
+    def read_packaged_fit_params( self ) :
+
+        with open( self.param_paths[ 'all_fit_params' ], 'rb' ) as f :
+            all_fit_params = dill.load( f )
+
+        return all_fit_params 
+
+
+    
+    def calibrate_pixels( self, peaks_to_use, actual_energies ) :
+
+        mu_values = self.read_params( 'mu' )
+
+        flattened_actual_energies = np.array( [ a for b in range( len( actual_energies ) )
+                                                for a in actual_energies[b] ] )
+        
+        total_num_peaks = len( flattened_actual_energies ) 
+        
+        # timer = jutils.time_estimator( self.num_dets * self.xdim * self.ydim, 10 ) 
+
+        calibrations = meas.zeros( ( 2, self.num_dets, self.xdim, self.ydim ) )
+        calibrations[:] = meas.nan
+        
+        for det in range( self.num_dets ) :
+
+            mu_flattened = meas.empty( ( total_num_peaks, self.xdim, self.ydim ) )
+
+            k = 0 
+            for i in range( self.num_groups ) :
+                for j in peaks_to_use[i] :
+                    # print( det ) 
+                    # print( mu_values.shape ) 
+                    mu_flattened[k] = mu_values[i][j][det]
+                    k += 1
+
+            for x in range( self.xdim ) :
+                for y in range( self.ydim ) :
+
+                    # timer.update()
+
+
+                    # skip data with any nan-entries
+                    if np.sum( np.isnan( mu_flattened[:,x,y].x ) ) > 0 :
+                        continue
+
+                    params_guess = [ 1.0, 0.0 ] 
+                    
+                    ret = scipy.optimize.leastsq( self._linear_resid,
+                                                  params_guess,
+                                                  args = ( flattened_actual_energies,
+                                                           mu_flattened[:,x,y].x,
+                                                           mu_flattened[:,x,y].dx ),
+                                                  full_output = 1 )
+
+                    params_result, cov, info, msg, status = ret
+        
+                    success = ( status >= 1 and status <= 4
+                                and ( cov is not None ) )
+
+#                    print( success )
+
+                    if status :
+
+                        chisqr = np.sum( info['fvec']**2 )
+                        nfree = len( flattened_actual_energies ) - len( params_result ) 
+                        redchisqr = chisqr / nfree
+                        cov = cov
+            
+                        params_result_errors = np.sqrt( np.diag( cov ) * redchisqr )
+                        # calibrations[ det, x, y ] = params_result[:] 
+
+                        pvalue = 1 - chi2.cdf( chisqr, nfree )
+                        
+                        # print() 
+                        # print( mu_flattened[:,x,y].x ) 
+                        # print( params_result ) 
+                        # print( params_result_errors )
+                        # print( redchisqr )
+
+                        # print( pvalue )
+                        if pvalue > 0.05 :
+                            calibrations[ :, det, x, y ] = meas.meas( params_result ,
+                                                                   params_result_errors )
+
+        with open( self.param_paths[ 'calibration' ], 'wb' ) as f :
+            dill.dump( calibrations, f )
+
+                            # print( 
+
+                        
+
+                            
+    def write_calibrated_params( self ) :
+
+        calibration = self.read_params( 'calibration' ) 
+
+        for param_str in [ 'tau1', 'tau2', 'sigma' ] :
+
+            data = self.read_params( param_str )
+            
+            if not self.peak_indep_param[ param_str ] :
+                calibrated = self.create_empty_data_container( 0 ) 
+                for i in range( self.num_groups ) :
+                    for j in range( self.num_peaks_per_group[i] ) :
+                        calibrated[i][j] = data[i][j] / calibration[0]
+
+            else :
+                calibrated = self.create_empty_data_container(1)         
+                for i in range( self.num_groups ) :
+                    calibrated[i] = data[i] / calibration[0]
+            
+            outname = param_str + '.calibrated'            
+            
+            with open( self.param_paths[ outname ], 'wb' ) as f :
+                dill.dump( calibrated, f )
+
+        # do peaks separately because they need the b offset
+        data = self.read_params( 'peaks' )
+        calibrated = self.create_empty_data_container( 0 ) 
+        for i in range( self.num_groups ) :
+            for j in range( self.num_peaks_per_group[i] ) :
+                calibrated[i][j] = ( data[i][j] - calibration[1].x ) / calibration[0].x
+
+        with open( self.param_paths[ 'peaks.calibrated' ], 'wb' ) as f :
+            dill.dump( calibrated, f )
+            
+
+            
+    
+    def plot_all_params( self, source_names = None, secant_matrices = None ) :
+
+        max_peaks = max( self.num_peaks_per_group ) 
+
+        cmap = matplotlib.cm.jet
+        
+        # plot heatmaps to get an idea of how the parameters look
+        for param_str in [ 'tau1', 'tau2', 'sigma', 'A', 'eta', 'mu',
+                           'peaks', 'peaks.calibrated',
+                           'tau1.calibrated', 'tau2.calibrated', 'sigma.calibrated'] :
+
+            print( param_str ) 
+
+            data = self.read_params( param_str )
+                
+            for d in range( self.num_dets ) :
+
+                det = self.detidx_to_detnum_dict[ d ]
+
+                if not self.peak_indep_param[ param_str ] : 
+
+                    f, heatmap_axarr = plt.subplots( self.num_groups, max_peaks,
+                                             figsize = ( 12, 8 ) )
+                    
+                    for i in range( self.num_groups ) :
+                        for j in range( max_peaks ) : 
+
+                            if j < self.num_peaks_per_group[i] : 
+                                im = heatmap_axarr[i,j].imshow( data[i][j][d].x, cmap = cmap )
+                                divider = make_axes_locatable( heatmap_axarr[i,j] )
+                                cax = divider.append_axes("right", size="5%", pad=0.05)
+                                f.colorbar(im, cax=cax)
+
+                                if source_names is not None :
+                                    heatmap_axarr[i,j].set_title( source_names[i] + ': Peak %d'
+                                                          % j )
+                                
+                            else :
+                                heatmap_axarr[i,j].axis( 'off' )
+
+                else :
+                    f, heatmap_axarr = plt.subplots( 1, self.num_groups, figsize = (10,12) )
+                    for i in range( self.num_groups ) :
+                        
+                        if source_names is not None :
+                            heatmap_axarr[i].set_title( source_names[i] )
+
+                        im = heatmap_axarr[i].imshow( data[i][d].x, cmap = cmap )
+                        divider = make_axes_locatable( heatmap_axarr[i] )
+                        cax = divider.append_axes("right", size="5%", pad=0.05)
+                        f.colorbar(im, cax=cax)
+                                
+                f.suptitle( 'Det %d: %s' % ( det, param_str ) )
+                f.suptitle( 'Det %d: %s' % ( det, param_str ) )
+                
+                
+                plt.savefig( self.heatmap_dir_path + '%d/%s.png'
+                             % ( det, param_str ) )
+
+                plt.close( 'all' ) 
+                
+        if secant_matrices is None :
+            return
+
+        self.plot_strips( source_names, secant_matrices ) 
+
+
+
+
+    # plot individual fstrips vs sec theta 
+    def plot_strips( self, source_names, secant_matrices ) :
+
+        max_peaks = max( self.num_peaks_per_group ) 
+        
+        for param_str in [ 'tau1', 'tau2', 'sigma', 'A', 'eta', 'mu',
+                           'peaks', 'peaks.calibrated',
+                           'tau1.calibrated', 'tau2.calibrated', 'sigma.calibrated'] :
+
+            print( param_str ) 
+
+            data = self.read_params( param_str )
+
+            for x in range( self.xdim ) : 
+
+                for d in range( self.num_dets ) :
+
+                    no_data = 1 
+
+                    detnum = self.detidx_to_detnum_dict[ d ]
+
+                    if not self.peak_indep_param[ param_str ] : 
+
+                        f, axarr = plt.subplots( self.num_groups, max_peaks,
+                                                         figsize = ( 12,8 ) )
+
+                        f.subplots_adjust( wspace = 0.5, hspace = 0.5 )
+
+                        for i in range( self.num_groups ) :
+                            for j in range( max_peaks ) :
+
+                                if j < self.num_peaks_per_group[i] : 
+
+
+                                    nan_count = np.count_nonzero(
+                                        np.isnan( secant_matrices[i][d][x] )
+                                        | np.isnan( data[i][j][d,x].x ) ) 
+                                    
+                                    if nan_count < self.xdim :
+                                        no_data = 0
+
+                                    axarr[i,j].errorbar( secant_matrices[i][d][x],
+                                                         data[i][j][d,x].x,
+                                                         data[i][j][d,x].dx,
+                                                         ls = 'none' ) 
+
+                                    if source_names is not None :
+                                        axarr[i,j].set_title( source_names[i] + ': Peak %d'
+                                                              % j )
+
+                                else :
+                                    axarr[i,j].axis( 'off' )
+
+                    else :
+                                                
+                        f, axarr = plt.subplots( 1, self.num_groups, figsize = (12,8) )
+                        for i in range( self.num_groups ) :
+
+                            # print( secant_matrices[i][d][x] )
+                            # print( data[i][d,x].x ) 
+                            
+                            if source_names is not None :
+                                axarr[i].set_title( source_names[i] )
+
+                            nan_count = np.count_nonzero(
+                                np.isnan( secant_matrices[i][d][x] )
+                                | np.isnan( data[i][d,x].x ) ) 
+                            
+                            if nan_count < self.xdim :
+                                no_data = 0 
+                                 
+                            axarr[i].errorbar( secant_matrices[i][d][x],
+                                               data[i][d,x].x,
+                                               data[i][d,x].dx,
+                                               ls = 'none' ) 
+
+                    f.suptitle( 'Det %d: %s' % ( detnum, param_str ) )
+
+                    outdir = self.strip_plots_path + str(detnum) + '/' + param_str + '/'
+
+                    # if not os.path.exists( outdir ) :
+                    os.makedirs( outdir, exist_ok = 1 )
+
+                    if not no_data : 
+                        plt.savefig( outdir + '%d.%s.%d.png' % ( detnum, param_str, x ) )
+
+                    plt.close( 'all' ) 
+        
+
+                             
     # todo                 
     def gen_csv( self, path ) :
         pass 
 
 
 
-    
-    # get the array of mu values for each pixel and for each peak.
-    
-    def get_all_mu_grids( self, read_from_file = 0 ) :
+    def _linear_fitfunc( self, params, x ) :
+        return params[0] * x + params[1]
 
-        # construct appropriately sized container for all the mu grids
-        mu_grids = [ [ 0 ] * self.num_peaks_per_feature[i]
-                     for i in range( self.num_features ) ]
-
-        for i in range( self.num_features ):
-            mu_grids[i] = [ meas.meas.empty( self.dimensions ) ] * self.num_peaks_per_feature[i] 
-
-
-        # meas.meas.empty( self.num_peaks_per_fit + self.dimensions )
-
-        if read_from_file :
-
-            mu_paths = [ [ [  self.mu_vals_dir + self.name + '_%d_%d_%s.bin' % (i,j,s)
-                              for s in [ 'x', 'dx' ] ]
-                           for j in range( self.num_peaks_per_feature[i] ) ]
-                         for i in range( self.num_features) ]
-                        
-            if all( [ os.path.exists( path ) for path in np.array( mu_paths ).flatten() ] ) :
-
-                for i in range( self.num_features ) :
-                    for j in range( self.num_peaks_per_feature[i] ) :
-
-                        mu = np.fromfile( mu_paths[i][j][0] ).reshape( self.dimensions )
-                        mu_delta = np.fromfile( mu_paths[i][j][1] ).reshape( self.dimensions )
-                        mu_grids[i][j] = meas.meas( mu, mu_delta )
-                        
-                return mu_grids
-
-            else:
-                print( 'INFO: requested to read mu and mu_delta from files, but they aren\'t there. constructing them now...' )
-
-
-                
-
-        # construct the array from the db if the files don't exist
-        # yet, or we requested a fresh fetch.
-
-        disconnect_conn_when_done = 0
-        if self.conn is None:
-            self.connect()
-            disconnect_conn_when_done = 1
-
-            
-        # populate the grid 
-        for i in range(3):
-            for j in range(2):
-                mu_grids[i][j] =  meas.meas.empty( self.dimensions )
-        
-        cursor = self.conn.cursor()
-        cursor.execute( 'SELECT * FROM ' + _tablename )
-
-        for row in cursor:
-
-            x = row['x']
-            y = row['y'] 
-            feature = row[ 'fit_id' ]
-            
-            # if fit didn't converge then all the mu values for that
-            # feature are assigned np.nan            
-            if not row[ 'successful_fit' ]: 
-
-                for i in range( self.num_peaks_per_feature[ feature ]  ):
-                    mu_grids[ feature ][ i ][ x,y ] = meas.nan
-                continue
-
-            params = spec.get_alpha_params_dict( _from_bin( row['model'] ) ) 
-
-            if not spec.alpha_model_valid_params_predicate( params ) :
-            
-                for i in range( self.num_peaks_per_feature[ feature ]  ):
-                    mu_grids[ feature ][ i ][ x,y ] = meas.nan
-                continue
-
-            mu = params[ 'mu' ]
-
-            if len( mu ) > 1 :
-                if ( np.abs( mu[1].x - mu[0].x - 20 ) > 10
-                     or any( mu.dx < 0.1 ) ):
-                    
-                    for i in range( self.num_peaks_per_feature[ feature ]  ):
-                        mu_grids[ feature ][ i ][ x,y ] = meas.nan
-                    continue
-            
-            # check if the fit used the alternate shape 
-            if len( mu ) != self.num_peaks_per_feature[ feature ] :
-
-                # todo: this doesn't work in the general case.
-                # this should depend on the specified alternate shape.
-                mu = meas.append( meas.nan, mu ) 
-
-
-            # populate the corresponding entry of the grid.
-            for i in range( self.num_peaks_per_feature[ feature ] ):
-                mu_grids[ feature ][ i ][ x,y ] = mu[i]
-
-                
-        if disconnect_conn_when_done:
-            self.disconnect()
-
-
-        # write to a file if requested. note that we have already constructed
-        # all the file names.
-        if read_from_file :
-            
-            for i in range( self.num_features ) :
-                for j in range( self.num_peaks_per_feature[i] ) :
-                    
-                    mu_grids[i][j].x.tofile(  mu_paths[i][j][0] )
-                    mu_grids[i][j].dx.tofile( mu_paths[i][j][1] )
-                    
-        
-        return mu_grids
+    def _linear_resid( self, params, x, y, yerr ) :
+        return ( y - self._linear_fitfunc( params, x ) ) / yerr
 
 
 
-    
-
-
-
-
-    
-    
-
-    def get_all_peak_grids( self, read_from_file = 1 ) :
-        
-        # construct appropriately sized container for all the peak grids
-        peak_grids = [ [ 0 ] * self.num_peaks_per_feature[i]
-                     for i in range( self.num_features ) ]
-
-        for i in range( self.num_features ):
-            peak_grids[i] = [ meas.meas.empty( self.dimensions ) ] * self.num_peaks_per_feature[i] 
-
-
-        # meas.meas.empty( self.num_peaks_per_fit + self.dimensions )
-
-        if read_from_file :
-
-            peak_paths = [ [ [  self.peak_vals_dir + self.name + '_%d_%d_%s.bin' % (i,j,s)
-                              for s in [ 'x', 'dx' ] ]
-                           for j in range( self.num_peaks_per_feature[i] ) ]
-                         for i in range( self.num_features) ]
-                        
-            if all( [ os.path.exists( path ) for path in np.array( peak_paths ).flatten() ] ) :
-
-                for i in range( self.num_features ) :
-                    for j in range( self.num_peaks_per_feature[i] ) :
-
-                        peak = np.fromfile( peak_paths[i][j][0] ).reshape( self.dimensions )
-                        peak_delta = np.fromfile( peak_paths[i][j][1] ).reshape( self.dimensions )
-                        peak_grids[i][j] = meas.meas( peak, peak_delta )
-                        
-                return peak_grids
-
-            else:
-                print( 'INFO: requested to read peak and peak_delta from files, but they aren\'t there. constructing them now...' )
-
-
-                
-
-        # construct the array from the db if the files don't exist
-        # yet, or we requested a fresh fetch.
-
-        disconnect_conn_when_done = 0
-        if self.conn is None:
-            self.connect()
-            disconnect_conn_when_done = 1
-
-            
-        # populate the grid 
-        for i in range(3):
-            for j in range(2):
-                peak_grids[i][j] =  meas.meas.empty( self.dimensions )
-        
-        cursor = self.conn.cursor()
-        cursor.execute( 'SELECT * FROM ' + _tablename )
-
-        rownum = 0
-        total_iterations = ( self.dimensions[0] * self.dimensions[1]
-                             * self.num_features ) 
-        
-        for row in cursor:
-
-            rownum += 1
-            
-            estimate_time_left( rownum, total_iterations, num_updates = 100 ) 
-
-            x = row['x']
-            y = row['y'] 
-            feature = row[ 'fit_id' ]
-
-            print( (x,y,feature)) 
-            
-            # if fit didn't converge then all the peak values for that
-            # feature are assigned np.nan
-            
-            if not row[ 'successful_fit' ]: 
-                for i in range( self.num_peaks_per_feature[ feature ]  ):
-                    peak_grids[ feature ][ i ][ x,y ] = meas.nan
-                continue
-
-            
-            model = _from_bin( row['model'] )
-
-
-            # throw out the data if we didn't estimate errorbars.
-            if not model.errorbars :
-                for i in range( self.num_peaks_per_feature[ feature ]  ):
-                    peak_grids[ feature ][ i ][ x,y ] = meas.nan
-                continue
-                
-            # do a monte carlo simulation for each peak in this feature.
-                
-            peaks = spec.estimate_alpha_peakpos( model, plot = 0 )
-
-            # check if the fit used the alternate shape
-            if len( peaks ) != self.num_peaks_per_feature[ feature ] :
-                    
-                # todo: this doesn't work in the general case.
-                # this should depend on the specified alternate shape.
-                peaks = meas.append( meas.nan, peaks ) 
-                    
-                    
-            # populate the corresponding entry of the grid.
-            for i in range( self.num_peaks_per_feature[ feature ] ):
-                peak_grids[ feature ][ i ][ x,y ] = peaks[i]
-
-        # reset the counter 
-        estimate_time_left( 0, 0, reset = 1 ) 
-                
-        if disconnect_conn_when_done:
-            self.disconnect()
-
-
-        # write to a file if requested. note that we have already constructed
-        # all the file names.
-        if read_from_file :
-            
-            for i in range( self.num_features ) :
-                for j in range( self.num_peaks_per_feature[i] ) :
-                    
-                    peak_grids[i][j].x.tofile(  peak_paths[i][j][0] )
-                    peak_grids[i][j].dx.tofile( peak_paths[i][j][1] )
-                            
-        return peak_grids    
-    
 
     
     def compute_fit_success_rate( self ) :
@@ -788,7 +958,9 @@ class spectrum_db( object ):
 
             success = row[ 'success' ]
 
-            success_count += success
+            if success == 1 :
+                success_count += success
+
             total_count += 1
 
 
@@ -797,8 +969,44 @@ class spectrum_db( object ):
         
         return success_count / total_count 
             
-            
 
+
+    def plot_success_pixels( self ) :
+        query = 'SELECT * FROM fits'
+
+        cursor = self.conn.cursor()
+
+        cursor.execute( query ) 
+
+        total_count = 0
+        success_count = 0
+
+        all_values = np.zeros( ( self.num_groups, self.num_dets, 32, 32 ) ) 
+        
+        for row in cursor.fetchall() :
+
+            row = dict( row )
+
+            success = row[ 'success' ]
+            g = row['group_num']
+            d = row['detnum'] - 1 
+            x = row['x']
+            y = row['y']
+
+            # print( g,d,x,y)
+            if success == 1 :
+                all_values[g,d,x,y] = 1
+            
+        f, axarr = plt.subplots( self.num_groups, self.num_dets )
+
+        for g in range( self.num_groups ) :
+            for d in range( self.num_dets ) :
+                axarr[g,d].imshow( all_values[g,d] )
+                
+        plt.show()
+        
+
+    
 
     
 

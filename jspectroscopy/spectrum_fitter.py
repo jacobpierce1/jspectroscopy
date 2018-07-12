@@ -11,7 +11,11 @@
 # warnings.filterwarnings("ignore")
 
 import matplotlib
-matplotlib.use('Agg')
+import matplotlib.cm
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+
+import jutils 
+
 
 
 import jspectroscopy.spec_utils as spec_utils
@@ -545,6 +549,30 @@ class spectrum_fitter( object ) :
         return single_peak 
 
 
+    def get_A( self, j ) :
+        return meas.meas( self.peak_params[j][0],
+                          self.peak_params_errors[j][0] )
+    
+    def get_mu( self, j ) :
+        return meas.meas( self.peak_params[j][1],
+                          self.peak_params_errors[j][1] )
+
+    def get_sigma( self, j ) :
+        return meas.meas( self.peak_params[j][2],
+                          self.peak_params_errors[j][2] )
+
+    def get_eta( self, j ) :
+        return meas.meas( self.det_params[j][0],
+                          self.det_params_errors[j][0] )
+    
+    def get_tau1( self, j ) :
+        return meas.meas( self.det_params[j][1],
+                          self.det_params_errors[j][1] )
+    
+    def get_tau2( self, j ) :
+        return meas.meas( self.det_params[j][2],
+                          self.det_params_errors[j][2] )
+    
 
 
     
@@ -599,8 +627,6 @@ def fit_spectrum( peak_types, x, y, dy, xbounds,
                      print_output = print_output ) 
     
     return spec_fitter
-
-
 
 
 
@@ -728,10 +754,69 @@ def auto_fit_spectrum( x, y, dy,
 
 
 
-        
+
+def plot_peaks( data_retriever, primary_peak_detector, dets_used, ngroups,
+                num_peaks_to_detect ) :
+
+    ndets = len( dets_used )
+
+    all_primary_peaks = np.zeros( ( ngroups, ndets, 32, 32 ) )
+
+    time_est = jutils.time_estimator( ndets * 32 * 32, 10 )
+
+    for d in range( ndets ) :
+        for i in range( 32 ) :
+            for j in range( 32 ) :
+                time_est.update()
+
+                data = data_retriever( dets_used[d], i, j )
+                if data is None :
+                    x, y, dy = data
+                    
+                our_peaks = np.asarray( spec_utils.get_n_peak_positions(
+                    num_peaks_to_detect, y ) )
+                
+                primary_peaks = primary_peak_detector( our_peaks, y )
+
+                if primary_peaks is None :
+                    for g in range( ngroups ) :
+                        all_primary_peaks[ g, d, i, j ] = np.nan
+                    continue
+
+                for g in range( ngroups ) :
+                    if primary_peaks[g] is not None :
+                        all_primary_peaks[ g, d, i, j ] = primary_peaks[g]
+                    else :
+                        all_primary_peaks[ g, d, i, j ] = np.nan
+                        
+                # print( primary_peaks[g][d] )
+
+    num_peaks_found = np.sum( ~np.isnan( all_primary_peaks ) )
+    total_data = ndets * ngroups * 32 * 32
+                
+    print( "yield: %d/%d = %.2f"
+           % ( num_peaks_found, total_data, num_peaks_found / total_data ) )
+                
+    f, axarr = plt.subplots( ngroups, ndets, figsize = (10,8) )
+
+    f.subplots_adjust( wspace = 0.8 )
+    
+    for g in range( ngroups ) :
+        for d in range( ndets ) :
+            cmap = matplotlib.cm.jet
+            cmap.set_bad( 'black', 1. )
+            im = axarr[g,d].imshow( all_primary_peaks[g,d], cmap = cmap )
+            divider = make_axes_locatable( axarr[g,d] )
+            cax = divider.append_axes("right", size="5%", pad=0.05)
+            f.colorbar(im, cax=cax )
+            
+    plt.show()
         
 
 
+
+    
+    
 
 def auto_fit_many_spectra( spec_db, data_retriever,
                            image_path, image_dimensions, 
@@ -745,10 +830,19 @@ def auto_fit_many_spectra( spec_db, data_retriever,
                            logscale = 1,
                            time_estimator = None,
                            print_output = 0,
-                           dets_used = None ) :
+                           dets_used = None,
+                           debug_peaks = 0,
+                           overwrite = 0 ) :
     
     # dimensions of output images: number of plots in each dimension
+    if( debug_peaks ) :
+        print( 'INFO: plotting all primary peaks...' )
+        ngroups = len( group_ranges )
+        plot_peaks( data_retriever, primary_peak_detector, dets_used, ngroups,
+                    num_peaks_to_detect )
+        sys.exit(0)
 
+        
     if dets_used is None :
         dets_used = [ -1 ] 
     
@@ -791,29 +885,40 @@ def auto_fit_many_spectra( spec_db, data_retriever,
                         else :
                             continue
 
-                        spec_fits = auto_fit_spectrum( xdata, ydata, dydata,
-                                                       group_ranges, peak_locations,
-                                                       num_peaks_to_detect, primary_peak_detector,
-                                                       peak_sizes_guesses, peak_width_guesses,
-                                                       det_params_guesses,
-                                                       peak_mu_offset,
-                                                       fit_acceptor, params_shuffler,
-                                                       axarr[i,j], rel_plot_bounds, logscale,
-                                                       print_output )
+                        if not overwrite :
+                            
+                            fits_already_converged = 1
 
-                        for l in range( num_groups ) :
-                            if spec_fits is not None : 
-                                spec_db.insert_fit_data( d, x, y, l, spec_fits[l] ) 
+                            for g in range( num_groups ) :
+                                ret = spec_db.read_fit_data( d, x, y, g )
+                                if not ret[ 'success' ] :
+                                    fits_already_converged = 0 
+                        else :
+                            fits_already_converged = 0
+                            
+                        if not fits_already_converged : 
+                            spec_fits = auto_fit_spectrum( xdata, ydata, dydata,
+                                                           group_ranges, peak_locations,
+                                                           num_peaks_to_detect,
+                                                           primary_peak_detector,
+                                                           peak_sizes_guesses,
+                                                           peak_width_guesses,
+                                                           det_params_guesses,
+                                                           peak_mu_offset,
+                                                           fit_acceptor, params_shuffler,
+                                                           axarr[i,j], rel_plot_bounds,
+                                                           logscale,
+                                                           print_output )
+                            
+                            for l in range( num_groups ) :
+                                if spec_fits is not None : 
+                                    spec_db.insert_fit_data( d, x, y, l, spec_fits[l] ) 
 
-                            else :
-                                spec_db.insert_fit_data( d, x, y, l, None ) 
+                                else :
+                                    spec_db.insert_fit_data( d, x, y, l, None ) 
 
                 plt.savefig( image_path + ( '%d_%d_%d' % (d,x,k) ) + '.png', format='png')
-                # plt.clf()
                 plt.close( f )
-
-
-    # spec_db.disconnect()
 
     return 1 
 
